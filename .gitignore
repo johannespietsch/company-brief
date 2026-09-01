@@ -1,0 +1,23 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# generated briefs and renders
+*.json
+!prompts/*.json
+*.html
+*.pdf
+
+# run telemetry
+evals/runs.jsonl
+evals/cassettes/
+
+briefs/
+# macOS
+.DS_Store
