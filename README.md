@@ -5,15 +5,19 @@ web search and returns strict JSON; the script validates it and renders A4-print
 
 ```bash
 python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
-cp .env.example .env && $EDITOR .env          # key, and workspace id if needed
+# default backend: the Claude Code CLI on its own login -- no API key needed
+# for --backend api: cp .env.example .env && $EDITOR .env
 
 .venv/bin/python brief.py fetch "Vondel Logistiek" --where "Rotterdam, NL" --html
 .venv/bin/python brief.py render briefs/vondel-logistiek.json --pages 4  # free re-render
 .venv/bin/python -m evals report                          # what it all cost
 ```
 
-`fetch` prints a projected cost and waits for confirmation before spending
-(`--yes` to skip). Requires `anthropic>=1.0`; a project-local `.venv` keeps that
+By default `fetch` runs through the Claude Code CLI (`claude -p`) on whatever it
+is logged in with, typically a subscription; any `ANTHROPIC_API_KEY` is kept away
+from it so it cannot bill the key instead. `--backend api` calls the API directly,
+prints a projected cost and waits for confirmation before spending (`--yes` to skip).
+See [Two backends](#two-backends) for how they differ. Requires `anthropic>=1.0`; a project-local `.venv` keeps that
 off any other project sharing your interpreter.
 
 Both land in `briefs/` (gitignored), named after the company; `-o` and a path
@@ -27,6 +31,7 @@ without paying for another research run. Print to PDF from the browser.
 |---|---|
 | `brief.py` | CLI: `fetch` and `render` |
 | `research.py` | the API call — tools, schema, `pause_turn` handling |
+| `research_cli.py` | the same turn through `claude -p`, same contract |
 | `prompts.py` | loads `prompts/`, fills the `{{...}}` template |
 | `schema.py` | the JSON schema the API enforces, plus the guards below |
 | `render.py` | HTML, and the page-length estimate |
@@ -35,7 +40,7 @@ without paying for another research run. Print to PDF from the browser.
 | `tools/measure.py` | recalibrates the page estimate if you change the CSS |
 | `tools/check_citations.py` | checks structured outputs still works with the web tools |
 
-Useful flags: `--stance SUPPLIER|DEMAND|DUAL` (default `DEMAND`), `--pages 2-5`
+Useful flags: `--backend cli|api` (default `cli`), `--stance SUPPLIER|DEMAND|DUAL` (default `DEMAND`), `--pages 2-5`
 (default 4), `--effort low..max` (default `high`), `--model opus|sonnet`,
 `--focus`, `--context`, `--no-retry`.
 
@@ -55,6 +60,27 @@ Useful flags: `--stance SUPPLIER|DEMAND|DUAL` (default `DEMAND`), `--pages 2-5`
 The stance defaults to `DEMAND` because its closing "implications for an external
 provider" section is the one that feeds a decision about what to offer them. Use
 `DUAL` when the company might also be a partner or a competitor.
+
+---
+
+## Two backends
+
+| | `cli` (default) | `api` |
+|---|---|---|
+| Auth | the CLI's login (subscription) | `ANTHROPIC_API_KEY` |
+| Agent loop | the CLI's | `research.py`: streaming, `pause_turn` and stall resumes |
+| Tools | `WebSearch`, `WebFetch` | `web_search` / `web_fetch` server tools with `max_uses` |
+| Fetched pages | **a small-model digest of the page** | the page itself, in context |
+| Structured output | `--json-schema` | `output_config.format` |
+| Cost logged | the CLI's list-price equivalent — not a bill | exact usage priced from `evals/pricing.py` |
+| Confirmation | none | projected cost, then y/N |
+
+The fetch difference matters for this prompt, whose rule is to read primary
+sources rather than trust snippets. Run one company on both backends and compare
+before relying on the CLI path for anything important. The CLI runs with
+`--safe-mode`, so your own CLAUDE.md, hooks, skills and MCP servers stay out of
+the research turn, and in a throwaway directory so its sessions do not clutter
+any project's resume list.
 
 ---
 

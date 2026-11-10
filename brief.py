@@ -11,6 +11,10 @@ fetch and render are separate so you can re-render (or hand-edit) a brief
 without paying for another research run. Every fetch is costed, logged to
 evals/runs.jsonl, and recorded as a replayable cassette.
 
+fetch runs through the Claude Code CLI by default, on whatever it is logged in
+with (typically a subscription). --backend api uses the Anthropic API and an
+ANTHROPIC_API_KEY instead, with exact per-token costing.
+
   python -m evals report            aggregate cost and quality signals
   python -m evals replay <file>     re-derive a brief from a cassette, free
 """
@@ -107,12 +111,18 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     from evals.pricing import cost, fmt
 
     model = MODELS.get(args.model, args.model)
-    if not credentials_present():
-        print("error: no ANTHROPIC_API_KEY in the environment or .env", file=sys.stderr)
-        return 1
-    if not confirm_spend(model, args.effort, args.yes, not args.no_cache):
-        print("aborted, nothing spent", file=sys.stderr)
-        return 1
+    cli = args.backend == "cli"
+    if cli:
+        import research_cli as backend
+    else:
+        backend = research
+        if not credentials_present():
+            print("error: no ANTHROPIC_API_KEY in the environment or .env", file=sys.stderr)
+            return 1
+        # The CLI path is not billed per run, so there is nothing to confirm.
+        if not confirm_spend(model, args.effort, args.yes, not args.no_cache):
+            print("aborted, nothing spent", file=sys.stderr)
+            return 1
 
     user = prompts.user_prompt(
         company_name=args.company,
@@ -127,16 +137,20 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         "company": args.company, "stance": args.stance, "pages": args.pages,
         "model": model, "effort": args.effort, "where": args.where, "focus": args.focus,
         "profile": str(args.profile) if args.profile else None,
-        "cache": not args.no_cache,
+        "cache": not args.no_cache, "backend": args.backend,
     }
-    print(f"researching {args.company} ({model}, effort={args.effort})...", file=sys.stderr)
+    print(f"researching {args.company} ({model}, effort={args.effort}, "
+          f"via {args.backend})...", file=sys.stderr)
 
     # The meter is built here, not inside research.run, so that a run which dies
     # part-way can still be costed -- an exception is not a return, so anything
     # constructed in there would be unreachable from the except branch.
-    state = research.Run(model, args.effort)
+    state = backend.Run(model, args.effort)
+    # The CLI reports its own list-price figure across every model it used;
+    # the API path prices exact usage at this model's rates.
+    spent = state.cost if cli else (lambda: cost(state.usage, model))
     try:
-        data, _ = research.run(
+        data, _ = backend.run(
             prompts.system_prompt(), user,
             model=model, effort=args.effort, retry=not args.no_retry,
             progress=None if args.quiet else lambda line: print(f"  {line}", file=sys.stderr),
@@ -146,7 +160,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         # cost() cannot raise UnknownModel here: confirm_spend already priced
         # this model above, so an unknown one never reaches the try.
         row = {**request_meta, "ok": False, "error": f"{type(e).__name__}: {e}",
-               "usage": state.usage.as_dict(), "cost": cost(state.usage, model)}
+               "usage": state.usage.as_dict(), "cost": spent()}
 
         # The whole point of this branch is to preserve the record of a run
         # that failed, so writing the tape is best-effort: a tape that will not
@@ -183,9 +197,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         cassette.path_for(args.company, model, args.effort),
         request=request_meta, responses=state.responses,
     )
-    spend = cost(state.usage, model)
+    spend = spent()
     u = state.usage
-    print(f"  {fmt(spend['total'])}  {u.input_tokens}in/{u.output_tokens}out  "
+    print(f"  {fmt(spend['total'])}{' list-price equivalent' if cli else ''}  "
+          f"{u.input_tokens}in/{u.output_tokens}out  "
           f"{u.web_searches} searches, {u.web_fetches} fetches  "
           f"{u.requests} request(s), {state.attempts} attempt(s), {u.seconds:.0f}s",
           file=sys.stderr)
@@ -229,18 +244,23 @@ def main() -> int:
                    help="outreach-profile.md; its offering sections steer openings "
                         "and contacts (omit for a neutral brief)")
     f.add_argument("--pages", type=int, default=4, choices=range(2, 6))
+    f.add_argument("--backend", choices=["cli", "api"], default="cli",
+                   help="cli: the Claude Code CLI on its own login, no API key "
+                        "(default); api: the Anthropic API, billed per token")
     f.add_argument("--model", default="opus", help="opus | sonnet | a full model id")
     # temperature is rejected on Opus 5 / Sonnet 5; effort is the lever instead.
     f.add_argument("--effort", default="high", choices=EFFORTS)
     f.add_argument("--no-retry", action="store_true",
                    help="do not retry when unverified comes back empty")
-    f.add_argument("-y", "--yes", action="store_true", help="skip the cost confirmation")
+    f.add_argument("-y", "--yes", action="store_true",
+                   help="skip the cost confirmation (api backend only)")
     f.add_argument("-q", "--quiet", action="store_true",
                    help="no per-search progress lines while researching")
     # Caching cut a measured brief by 75%% with no change to the research done;
     # the flag exists to reproduce tools/ab_caching.py, not for normal use.
     f.add_argument("--no-cache", action="store_true",
-                   help="disable prompt caching (roughly 4x more expensive)")
+                   help="disable prompt caching (roughly 4x more expensive; "
+                        "api backend only)")
     f.add_argument("-o", "--out", type=Path,
                    help="JSON path (default briefs/<company>.json)")
     f.add_argument("--html", nargs="?", const="", metavar="PATH",

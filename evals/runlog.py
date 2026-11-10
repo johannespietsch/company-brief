@@ -43,6 +43,9 @@ def prior(model: str, effort: str, cache: bool = True,
             if r.get("model") == model and r.get("effort") == effort
             # rows written before caching existed have no key: they are uncached
             and r.get("cache", False) == cache
+            # CLI runs report a list-price figure over a different tool mix;
+            # they would skew an API projection either way.
+            and r.get("backend", "api") == "api"
             and r.get("ok") and r.get("usage")]
     if len(rows) < 3:
         return None

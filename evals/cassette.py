@@ -28,7 +28,8 @@ def path_for(company: str, model: str, effort: str, when=None,
 
 def save(path: Path, *, request: dict, responses: list,
          partial: bool = False) -> Path:
-    """`responses` are anthropic Message objects, in call order.
+    """`responses` are anthropic Message objects, in call order -- or, from the
+    CLI backend, its raw stream-json events, which are already plain dicts.
 
     `partial` marks a tape from a run that never produced a brief -- a stalled
     or errored fetch. It is evidence, not a fixture: the recorded text does not
@@ -39,7 +40,8 @@ def save(path: Path, *, request: dict, responses: list,
         "recorded": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "partial": partial,
         "request": request,
-        "responses": [r.model_dump(mode="json") for r in responses],
+        "responses": [r if isinstance(r, dict) else r.model_dump(mode="json")
+                      for r in responses],
     }
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
@@ -50,7 +52,15 @@ def load(path: Path) -> dict:
 
 
 def replay_text(cassette: dict) -> str:
-    """Concatenated assistant text across the recorded responses."""
+    """Concatenated assistant text across the recorded responses.
+
+    A CLI tape carries the brief as the last result event's structured_output
+    rather than as text, so that wins when present.
+    """
+    results = [r for r in cassette["responses"]
+               if r.get("type") == "result" and isinstance(r.get("structured_output"), dict)]
+    if results:
+        return json.dumps(results[-1]["structured_output"], ensure_ascii=False)
     out = []
     for resp in cassette["responses"]:
         for block in resp.get("content", []):

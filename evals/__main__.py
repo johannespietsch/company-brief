@@ -27,7 +27,9 @@ def _report_partial(path: str, data: dict) -> int:
     responses = data.get("responses", [])
     kinds: dict[str, int] = {}
     for resp in responses:
-        for block in resp.get("content", []):
+        # API responses hold content blocks; CLI events hold them under message.
+        blocks = resp.get("content") or (resp.get("message") or {}).get("content") or []
+        for block in blocks if isinstance(blocks, list) else []:
             kind = block.get("type", "?")
             kinds[kind] = kinds.get(kind, 0) + 1
 
